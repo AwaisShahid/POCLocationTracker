@@ -5,70 +5,60 @@
 //  Created by Awais Shahid on 03/06/2026.
 //
 
-
 import SwiftUI
-import CoreLocation
 
 struct HomeView: View {
 
-    @StateObject var locationManager = LocationManager()
+	@EnvironmentObject var locationManager: LocationManager
 
-    var body: some View {
+	var body: some View {
 
-        NavigationView {
+		NavigationView {
 
-            VStack(spacing: 20) {
+			List {
 
-                Text("Latitude")
-                Text(
-                    "\(locationManager.currentLocation?.coordinate.latitude ?? 0)"
-                )
+				Section("Current Status") {
 
-                Text("Longitude")
-                Text(
-                    "\(locationManager.currentLocation?.coordinate.longitude ?? 0)"
-                )
+					Text(locationManager.trackingStatus)
 
-                Text("Speed")
-                Text(
-                    "\(locationManager.currentLocation?.speed ?? 0)"
-                )
+					Text(locationManager.activeTrigger)
 
-                Text("Distance")
-                Text(
-                    "\(Int(locationManager.distanceTravelled)) meters"
-                )
+					Text("\(Int(locationManager.distanceTravelled)) m")
+				}
 
-                Text("Status")
-                Text(locationManager.trackingStatus)
+				Section("Completed Routes") {
 
-                Text("Trigger")
-                Text(locationManager.activeTrigger)
+					ForEach(locationManager.completedRoutes) { route in
 
-                Button("Simulate Start Tracking") {
+						NavigationLink {
 
-                    locationManager.startTracking(
-                        trigger: "Manual"
-                    )
-                }
+							MapView(
+								locationManager: locationManager,
+								selectedRoute: route
+							)
 
-                Button("Simulate Stop Tracking") {
+						} label: {
 
-                    locationManager.stopTracking()
-                }
+							VStack(alignment: .leading) {
 
-                NavigationLink("Open Map") {
+								Text("\(route.startGeofence) → \(route.endGeofence ?? "Unknown")")
 
-                    MapView(
-                        locationManager: locationManager
-                    )
-                }
-            }
-            .padding()
-            .onAppear {
+								Text("\(route.points.count) points")
 
-                locationManager.requestPermission()
-            }
-        }
-    }
+								Text(
+									"\(Int(route.distance)) meters"
+								)
+								.font(.caption)
+							}
+						}
+					}
+				}
+			}
+			.navigationTitle("Route Tracker")
+			.onAppear {
+				locationManager.requestPermission()
+			}
+		}
+		
+	}
 }

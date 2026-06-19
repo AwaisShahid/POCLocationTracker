@@ -10,12 +10,22 @@ import CoreData
 
 @main
 struct POCLocationTrackerApp: App {
-    let persistenceController = PersistenceController.shared
 
-    var body: some Scene {
-        WindowGroup {
-            HomeView()
-                .environment(\.managedObjectContext, persistenceController.container.viewContext)
-        }
-    }
+	let persistenceController = PersistenceController.shared
+
+	@StateObject private var locationManager = LocationManager(
+		context: PersistenceController.shared.container.viewContext
+	)
+
+	var body: some Scene {
+		WindowGroup {
+
+			HomeView()
+				.environmentObject(locationManager)
+				.environment(
+					\.managedObjectContext,
+					persistenceController.container.viewContext
+				)
+		}
+	}
 }

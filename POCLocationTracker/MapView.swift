@@ -5,37 +5,88 @@
 //  Created by Awais Shahid on 03/06/2026.
 //
 
-
 import SwiftUI
 import MapKit
 
 struct MapView: View {
 
-    @ObservedObject var locationManager: LocationManager
+	@ObservedObject var locationManager: LocationManager
 
-    var body: some View {
+	let selectedRoute: TrackingSession?
 
-        Map {
+	@State private var cameraPosition: MapCameraPosition = .automatic
 
-            UserAnnotation()
+	var body: some View {
 
-            MapCircle(
-                center: CLLocationCoordinate2D(
-                    latitude: 37.3349,
-                    longitude: -122.0090
-                ),
-                radius: 100
-            )
+		Map(position: $cameraPosition) {
 
-            MapPolyline(
-                coordinates:
-                    locationManager.recordedPoints.map {
-                        CLLocationCoordinate2D(
-                            latitude: $0.latitude,
-                            longitude: $0.longitude
-                        )
-                    }
-            )
-        }
-    }
+			if let route = selectedRoute {
+
+				MapPolyline(
+					coordinates: route.points.map {
+						CLLocationCoordinate2D(
+							latitude: $0.latitude,
+							longitude: $0.longitude
+						)
+					}
+				)
+				.stroke(
+					.blue,
+					lineWidth: 8
+				)
+
+				if let first = route.points.first {
+
+					Annotation(
+						"START",
+						coordinate: CLLocationCoordinate2D(
+							latitude: first.latitude,
+							longitude: first.longitude
+						)
+					) {
+
+						Image(systemName: "flag.fill")
+							.foregroundColor(.green)
+					}
+				}
+
+				if let last = route.points.last {
+
+					Annotation(
+						"END",
+						coordinate: CLLocationCoordinate2D(
+							latitude: last.latitude,
+							longitude: last.longitude
+						)
+					) {
+
+						Image(systemName: "flag.checkered")
+							.foregroundColor(.red)
+					}
+				}
+			}
+		}
+		.onAppear {
+
+			guard
+				let route = selectedRoute,
+				let first = route.points.first
+			else {
+				return
+			}
+
+			cameraPosition = .region(
+				MKCoordinateRegion(
+					center: CLLocationCoordinate2D(
+						latitude: first.latitude,
+						longitude: first.longitude
+					),
+					span: MKCoordinateSpan(
+						latitudeDelta: 0.01,
+						longitudeDelta: 0.01
+					)
+				)
+			)
+		}
+	}
 }

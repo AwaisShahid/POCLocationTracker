@@ -5,122 +5,306 @@
 //  Created by Awais Shahid on 03/06/2026.
 //
 
-
 import Foundation
 import CoreLocation
-import MapKit
 import SwiftUI
 import Combine
+import CoreData
 
 final class LocationManager: NSObject, ObservableObject {
 
-    private let manager = CLLocationManager()
-
-    @Published var currentLocation: CLLocation?
-    @Published var distanceTravelled: Double = 0
-    @Published var trackingStatus: String = "Idle"
-    @Published var activeTrigger: String = "None"
-
-    @Published var recordedPoints: [LocationPoint] = []
-
-    private var previousLocation: CLLocation?
-
-    private var session: TrackingSession?
-
-    private var isTracking = false
-
-    private var stationaryTimer: Timer?
-
-    private let geofenceCenter = CLLocationCoordinate2D(
-        latitude: 37.331161,
-        longitude: -122.028295
-    )
+	private let manager = CLLocationManager()
+	private let context: NSManagedObjectContext
 	
-//	37.331161, -122.028295
+	private var previousLocation: CLLocation?
+	private var session: TrackingSession?
+	private var isTracking = false
+	private var expectedDestination: GeofencePoint?
+	private var monitoringStarted = false
+	
+	@Published var currentLocation: CLLocation?
+	@Published var distanceTravelled: Double = 0
+	@Published var trackingStatus: String = "Idle"
+	@Published var activeTrigger: String = "None"
+	@Published var recordedPoints: [LocationPoint] = []
+	
+	init(context: NSManagedObjectContext) {
 
-//	latitude: 37.3349,
-//	longitude: -122.0090
+		self.context = context
 
-    override init() {
-        super.init()
+		super.init()
 
-        manager.delegate = self
-        manager.desiredAccuracy = kCLLocationAccuracyBest
+		manager.delegate = self
+		manager.desiredAccuracy = kCLLocationAccuracyBest
 
-        manager.allowsBackgroundLocationUpdates = true
-        manager.pausesLocationUpdatesAutomatically = false
-    }
+		manager.allowsBackgroundLocationUpdates = true
+		manager.pausesLocationUpdatesAutomatically = false
+		
+		loadRoutes()
+	}
+	
+	deinit {
 
-    func requestPermission() {
+		manager.stopUpdatingLocation()
 
-        manager.requestAlwaysAuthorization()
+		for region in manager.monitoredRegions {
 
-        manager.startUpdatingLocation()
+			manager.stopMonitoring(for: region)
+		}
+	}
+	
+	private let validRoutes: [RoutePair] = [
 
-        startGeofence()
-    }
+		RoutePair(
+			startID: "Office",
+			endID: "Airport"
+		),
 
-    private func startGeofence() {
+		RoutePair(
+			startID: "Airport",
+			endID: "Warehouse"
+		)
+	]
+	
+	let geofences: [GeofencePoint] = [
 
-        let region = CLCircularRegion(
-            center: geofenceCenter,
-            radius: 100,
-            identifier: "OfficeGeofence"
-        )
+		GeofencePoint(
+			id: "Office",
+			latitude: 37.335261,
+			longitude: -122.032049,
+			radius: 50
+		),
 
-        region.notifyOnEntry = true
-        region.notifyOnExit = true
+		GeofencePoint(
+			id: "Airport",
+			latitude: 37.334708,
+			longitude: -122.068077,
+			radius: 50
+		),
 
-        manager.startMonitoring(for: region)
+		GeofencePoint(
+			id: "Warehouse",
+			latitude: 37.3360,
+			longitude: -122.0200,
+			radius: 50
+		)
+	]
+	
+	@Published var completedRoutes: [TrackingSession] = []
+	
+	func requestPermission() {
 
-        print("📍 Geofence monitoring started")
-    }
+		manager.requestAlwaysAuthorization()
 
-    func startTracking(trigger: String) {
+		guard !monitoringStarted else { return }
 
-        guard !isTracking else { return }
+		monitoringStarted = true
 
-        isTracking = true
+		startGeofenceMonitoring()
+	}
+	
+	private func geofenceFor(identifier: String) -> GeofencePoint? {
 
-        activeTrigger = trigger
-        trackingStatus = "Tracking"
+		geofences.first {
+			$0.id == identifier
+		}
+	}
 
-        recordedPoints.removeAll()
+	private func routeFor(startID: String) -> RoutePair? {
 
-        session = TrackingSession(
-            trigger: trigger,
-            points: []
-        )
+		validRoutes.first {
+			$0.startID == startID
+		}
+	}
 
-        print("▶️ Tracking Started")
-        print("Trigger: \(trigger)")
-    }
+	private func startGeofenceMonitoring() {
 
-    func stopTracking() {
+		for fence in geofences {
 
-        guard isTracking else { return }
+			let region = CLCircularRegion(center: CLLocationCoordinate2D(latitude: fence.latitude, longitude: fence.longitude), radius: fence.radius, identifier: fence.id)
 
-        isTracking = false
+			region.notifyOnEntry = true
+			region.notifyOnExit = true
 
-        trackingStatus = "Stopped"
+			manager.startMonitoring(for: region)
+		}
+	}
 
-        print("⏹ Tracking Stopped")
+	func startTracking(trigger: String, startGeofence: String) {
 
-        print("""
-        Session Summary
-        Trigger: \(session?.trigger ?? "")
-        Points: \(session?.points.count ?? 0)
-        Distance: \(distanceTravelled)m
-        """)
-    }
+		guard !isTracking else { return }
+		
+		manager.startUpdatingLocation()
+		manager.requestLocation()
+		
+		distanceTravelled = 0
+		recordedPoints.removeAll()
+		previousLocation = nil
+
+		isTracking = true
+
+		activeTrigger = trigger
+		trackingStatus = "Tracking"
+
+		recordedPoints.removeAll()
+
+		session = TrackingSession(
+			trigger: trigger,
+			startDate: Date(),
+			endDate: nil,
+			startGeofence: startGeofence,
+			endGeofence: nil,
+			points: [],
+			distance: 0
+		)
+
+		print("Tracking Started")
+		print("Trigger: \(trigger)")
+	}
+
+	func stopTracking() {
+
+		guard isTracking else { return }
+		
+		manager.stopUpdatingLocation()
+
+		isTracking = false
+
+		trackingStatus = "Stopped"
+
+		session?.endDate = Date()
+
+		if let session {
+
+			completedRoutes.insert(
+				session,
+				at: 0
+			)
+
+			saveRoute(session)
+		}
+
+		print("Route Saved")
+		print("Points: \(session?.points.count ?? 0)")
+
+		distanceTravelled = 0
+		self.session = nil
+	}
+	
+	private func saveRoute(_ route: TrackingSession) {
+
+		let entity = RouteEntity(context: context)
+
+		entity.id = route.id
+		entity.trigger = route.trigger
+		entity.startDate = route.startDate
+		entity.endDate = route.endDate
+		entity.distance = route.distance
+		entity.startGeofence = route.startGeofence
+		entity.endGeofence = route.endGeofence
+
+		do {
+			let data = try JSONEncoder().encode(route.points)
+			entity.pointsJSON = String(
+				data: data,
+				encoding: .utf8
+			)
+		
+			print("Saving \(route.points.count) points")
+
+			try context.save()
+
+			print("✅ Route Saved")
+
+		} catch {
+			print(error)
+		}
+	}
+	
+	func loadRoutes() {
+
+		let request: NSFetchRequest<RouteEntity> =
+			RouteEntity.fetchRequest()
+
+		request.sortDescriptors = [
+			NSSortDescriptor(key: "startDate", ascending: false)
+		]
+
+		do {
+
+			let routes = try context.fetch(request)
+
+			completedRoutes = routes.compactMap { route -> TrackingSession? in
+
+				guard
+					let trigger = route.trigger,
+					let startDate = route.startDate,
+					let json = route.pointsJSON,
+					let data = json.data(using: .utf8),
+					let points = try? JSONDecoder()
+						.decode(
+							[LocationPoint].self,
+							from: data
+						)
+				else {
+					return nil
+				}
+
+				print("Loaded Route")
+				print("Trigger: \(trigger)")
+				print("Points: \(points.count)")
+
+				return TrackingSession(
+					trigger: trigger,
+					startDate: startDate,
+					endDate: route.endDate,
+					startGeofence: route.startGeofence ?? trigger,
+					endGeofence: route.endGeofence,
+					points: points,
+					distance: route.distance
+				)
+			}
+
+		} catch {
+
+			print(error)
+		}
+	}
 }
 
 extension LocationManager: CLLocationManagerDelegate {
+	
+	func locationManagerDidChangeAuthorization(
+		_ manager: CLLocationManager
+	) {
 
+		print("Authorization = \(manager.authorizationStatus.rawValue)")
+
+		switch manager.authorizationStatus {
+
+		case .authorizedAlways:
+
+			print("Authorized Always")
+
+		case .authorizedWhenInUse:
+
+			print("Only When In Use")
+
+		case .denied:
+
+			print("Denied")
+
+		default:
+			break
+		}
+	}
+	
 	func locationManager(
 		_ manager: CLLocationManager,
 		didUpdateLocations locations: [CLLocation]
 	) {
+
+		print("📍 didUpdateLocations")
 
 		guard let location = locations.last else { return }
 
@@ -132,49 +316,85 @@ extension LocationManager: CLLocationManagerDelegate {
 
 			distanceTravelled += delta
 
-			if distanceTravelled >= 500 &&
-				!isTracking {
-
-				startTracking(
-					trigger: "500 Meter Walk"
-				)
-			}
+			session?.distance = distanceTravelled
 		}
 
 		previousLocation = location
 
-		if isTracking {
+		guard isTracking else { return }
 
-			let point = LocationPoint(
-				latitude: location.coordinate.latitude,
-				longitude: location.coordinate.longitude,
-				timestamp: Date()
-			)
+		let point = LocationPoint(
+			latitude: location.coordinate.latitude,
+			longitude: location.coordinate.longitude,
+			timestamp: Date()
+		)
 
-			recordedPoints.append(point)
+		recordedPoints.append(point)
 
-			session?.points.append(point)
+		session?.points.append(point)
 
-			print("""
-			📌 Recorded
-			\(point.latitude)
-			\(point.longitude)
-			""")
-		}
-
-		checkStationary(location)
+		print("""
+		Recorded
+		\(point.latitude)
+		\(point.longitude)
+		""")
 	}
+	
+	func locationManager(
+		_ manager: CLLocationManager,
+		didFailWithError error: Error
+	) {
 
+		print("Location Error")
+		print(error.localizedDescription)
+	}
+	
 	func locationManager(
 		_ manager: CLLocationManager,
 		didEnterRegion region: CLRegion
 	) {
 
-		print("✅ Entered Geofence")
+		print("Entered \(region.identifier)")
 
-		startTracking(
-			trigger: "Geofence Entry"
-		)
+		if !isTracking {
+
+			guard let route =
+				routeFor(startID: region.identifier)
+			else {
+				print("No route configured")
+				return
+			}
+
+			expectedDestination =
+				geofenceFor(
+					identifier: route.endID
+				)
+
+			startTracking(
+				trigger: "Journey",
+				startGeofence: region.identifier
+			)
+
+			print("Destination = \(route.endID)")
+
+			return
+		}
+
+		guard let destination =
+			expectedDestination
+		else {
+			return
+		}
+
+		if region.identifier == destination.id {
+
+			print("Destination Reached")
+
+			session?.endGeofence =
+				destination.id
+
+			stopTracking()
+		}
 	}
 
 	func locationManager(
@@ -182,37 +402,6 @@ extension LocationManager: CLLocationManagerDelegate {
 		didExitRegion region: CLRegion
 	) {
 
-		print("🚪 Exited Geofence")
-
-		stopTracking()
-	}
-}
-
-private extension LocationManager {
-
-	func checkStationary(
-		_ location: CLLocation
-	) {
-
-		guard isTracking else { return }
-
-		if location.speed < 0.5 {
-
-			stationaryTimer?.invalidate()
-
-			stationaryTimer = Timer.scheduledTimer(
-				withTimeInterval: 300,
-				repeats: false
-			) { [weak self] _ in
-
-				print("🛑 User stationary 5 min")
-
-				self?.stopTracking()
-			}
-
-		} else {
-
-			stationaryTimer?.invalidate()
-		}
+		print("Exited \(region.identifier)")
 	}
 }
